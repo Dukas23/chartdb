@@ -5,7 +5,7 @@ import { useConfig } from '@/hooks/use-config';
 import { useNavigate } from 'react-router-dom';
 import { nanoid } from 'nanoid';
 import { DatabaseType } from '@/lib/domain/database-type';
-import { generateDiagramId } from '@/lib/utils';
+import { generateDiagramId, generateId } from '@/lib/utils';
 
 interface MCPContextType {
     isConnected: boolean;
@@ -17,8 +17,6 @@ const normalizeDatabaseType = (type?: string): DatabaseType => {
     const defaultType = DatabaseType.POSTGRESQL;
     if (!type) return defaultType;
     const lower = type.toLowerCase();
-    const validTypes = Object.values(DatabaseType) as string[];
-    if (validTypes.includes(lower)) return lower as DatabaseType;
     if (lower.includes('postgre')) return DatabaseType.POSTGRESQL;
     if (lower.includes('mysql')) return DatabaseType.MYSQL;
     if (lower.includes('sqlite')) return DatabaseType.SQLITE;
@@ -44,16 +42,14 @@ export const MCPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     useEffect(() => { chartdbRef.current = chartdb; }, [chartdb]);
     useEffect(() => { storageRef.current = storage; }, [storage]);
 
-    const withRetry = async <T,>(fn: () => Promise<T>, attempts = 3, delay = 500): Promise<T> => {
+    const withRetry = async <T,>(fn: () => Promise<T>, attempts = 4, delay = 600): Promise<T> => {
         let lastError: any;
         for (let i = 0; i < attempts; i++) {
             try {
                 return await fn();
             } catch (err) {
                 lastError = err;
-                if (i < attempts - 1) {
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                }
+                if (i < attempts - 1) await new Promise(r => setTimeout(resolve, delay));
             }
         }
         throw lastError;
@@ -64,7 +60,7 @@ export const MCPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const ws = new WebSocket('ws://localhost:3000');
 
             ws.onopen = () => {
-                console.log('%c[MCP] Bridge Active & Connected to UI', 'background: #004d40; color: #00ff9d; font-weight: bold; padding: 4px;');
+                console.log('%c[MCP v1.2] Bridge Connected', 'background: #1a1a2e; color: #00ff9d; font-weight: bold;');
                 setIsConnected(true);
             };
 
@@ -76,7 +72,7 @@ export const MCPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         const { params } = message;
                         console.group(`%c[MCP] Tool: ${message.method}`, 'color: #70a1ff');
 
-                        const getTargetDiagramId = async () => {
+                        const getTargetId = async () => {
                             if (activeMcpDiagramIdRef.current) return activeMcpDiagramIdRef.current;
                             if (chartdbRef.current.diagramId) return chartdbRef.current.diagramId;
                             const diagrams = await storageRef.current.listDiagrams();
@@ -91,14 +87,10 @@ export const MCPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                             case 'create_diagram': {
                                 const id = generateDiagramId();
                                 const dbType = normalizeDatabaseType(params.databaseType);
-                                const newDiagram = {
-                                    id,
-                                    name: params.name || 'New MCP Project',
-                                    databaseType: dbType,
-                                    createdAt: new Date(),
-                                    updatedAt: new Date(),
-                                };
-                                await storageRef.current.addDiagram({ diagram: newDiagram });
+                                await storageRef.current.addDiagram({ diagram: {
+                                    id, name: params.name || 'New Project', databaseType: dbType,
+                                    createdAt: new Date(), updatedAt: new Date(),
+                                }});
                                 await updateConfig({ config: { defaultDiagramId: id } });
                                 activeMcpDiagramIdRef.current = id;
                                 navigate(`/diagrams/${id}`);
@@ -107,16 +99,10 @@ export const MCPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                             }
 
                             case 'get_diagram': {
-                                const id = await getTargetDiagramId();
+                                const id = await getTargetId();
                                 if (!id) throw new Error('No diagram found.');
                                 if (id === chartdbRef.current.diagramId) {
-                                    result = {
-                                        id: chartdbRef.current.diagramId,
-                                        name: chartdbRef.current.diagramName,
-                                        databaseType: chartdbRef.current.databaseType,
-                                        tables: chartdbRef.current.tables,
-                                        relationships: chartdbRef.current.relationships,
-                                    };
+                                    result = { id: id, name: chartdbRef.current.diagramName, tables: chartdbRef.current.tables, relationships: chartdbRef.current.relationships };
                                 } else {
                                     result = await storageRef.current.getDiagram(id, { includeTables: true, includeRelationships: true });
                                 }
@@ -124,160 +110,144 @@ export const MCPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                             }
 
                             case 'add_table': {
-                                const id = await getTargetDiagramId();
-                                if (!id) throw new Error('Target diagram not found.');
+                                const id = await getTargetId();
                                 const tableData = params.table || params;
                                 const newTable = {
                                     id: tableData.id || nanoid(),
                                     name: tableData.name,
                                     schema: tableData.schema || (chartdbRef.current.databaseType === DatabaseType.POSTGRESQL ? 'public' : null),
-                                    x: tableData.x ?? (Math.random() * 500),
-                                    y: tableData.y ?? (Math.random() * 500),
-                                    color: tableData.color || '#3b82f6',
-                                    isView: !!tableData.isView,
+                                    x: tableData.x ?? (Math.random() * 500), y: tableData.y ?? (Math.random() * 500),
+                                    color: tableData.color || '#3b82f6', isView: !!tableData.isView,
                                     comments: tableData.comments || tableData.comment || '',
                                     createdAt: Date.now(),
                                     fields: (tableData.fields || []).map((f: any) => ({
-                                        id: f.id || nanoid(),
-                                        name: f.name,
+                                        id: f.id || nanoid(), name: f.name,
                                         type: typeof f.type === 'string' ? { id: f.type.toUpperCase(), name: f.type.toUpperCase() } : (f.type || { id: 'VARCHAR', name: 'VARCHAR' }),
-                                        nullable: f.nullable ?? !f.isNotNull,
-                                        isPrimaryKey: !!(f.isPrimaryKey || f.primaryKey),
-                                        isUnique: !!(f.isUnique || f.unique),
-                                        defaultValue: f.defaultValue || null,
-                                        comment: f.comment || '',
+                                        nullable: f.nullable ?? !f.isNotNull, isPrimaryKey: !!(f.isPrimaryKey || f.primaryKey),
+                                        isUnique: !!(f.isUnique || f.unique), defaultValue: f.defaultValue || null, comment: f.comment || '',
                                     })),
                                     indexes: tableData.indexes || [],
                                 };
-                                if (id === chartdbRef.current.diagramId) {
-                                    await chartdbRef.current.addTable(newTable);
-                                } else {
-                                    await storageRef.current.addTable({ diagramId: id, table: newTable });
-                                    await chartdbRef.current.loadDiagram(id);
-                                }
+                                if (id === chartdbRef.current.diagramId) { await chartdbRef.current.addTable(newTable); }
+                                else { await storageRef.current.addTable({ diagramId: id, table: newTable }); await chartdbRef.current.loadDiagram(id); }
                                 result = { status: 'success', tableId: newTable.id };
                                 break;
                             }
 
-                            case 'update_table': {
-                                const id = await getTargetDiagramId();
-                                if (!id) throw new Error('Diagram not found.');
-                                await chartdbRef.current.updateTable(params.id, params.attributes);
-                                result = { status: 'success' };
-                                break;
-                            }
-
-                            case 'delete_table': {
-                                const id = await getTargetDiagramId();
-                                if (!id) throw new Error('Diagram not found.');
-                                await chartdbRef.current.removeTable(params.id);
-                                result = { status: 'success' };
-                                break;
-                            }
-
                             case 'add_relationship': {
-                                const id = await getTargetDiagramId();
-                                if (!id) throw new Error('No target diagram.');
-
+                                const id = await getTargetId();
                                 const rel = params.relationship || params;
-                                
-                                // Retry logic for finding tables/fields
                                 result = await withRetry(async () => {
                                     const tables = id === chartdbRef.current.diagramId ? chartdbRef.current.tables : (await storageRef.current.listTables(id));
+                                    
+                                    const findTable = (name: string) => tables.find((t: any) => 
+                                        t.id === name || t.name.toLowerCase() === name.toLowerCase()
+                                    );
                                     
                                     const sName = rel.sourceTable || rel.source_table || rel.startTable || rel.start_table;
                                     const tName = rel.targetTable || rel.target_table || rel.endTable || rel.end_table;
                                     
-                                    const sourceTable = tables.find((t: any) => t.id === sName || t.name === sName);
-                                    const targetTable = tables.find((t: any) => t.id === tName || t.name === tName);
+                                    const sourceTable = findTable(sName);
+                                    const targetTable = findTable(tName);
 
-                                    if (!sourceTable || !targetTable) {
-                                        throw new Error(`Tables not found yet: source=${sName}, target=${tName}`);
-                                    }
+                                    if (!sourceTable || !targetTable) throw new Error(`Tables not found: source=${sName}, target=${tName}`);
+
+                                    const findField = (table: any, name: string) => (table.fields || []).find((f: any) => 
+                                        f.id === name || f.name.toLowerCase() === name.toLowerCase()
+                                    );
 
                                     const sFieldName = rel.sourceField || rel.source_field || rel.startField || rel.start_field;
                                     const tFieldName = rel.targetField || rel.target_field || rel.endField || rel.end_field;
 
-                                    const sourceField = (sourceTable.fields || []).find((f: any) => f.id === sFieldName || f.name === sFieldName);
-                                    const targetField = (targetTable.fields || []).find((f: any) => f.id === tFieldName || f.name === tFieldName);
+                                    const sourceField = findField(sourceTable, sFieldName);
+                                    const targetField = findField(targetTable, tFieldName);
 
                                     if (!sourceField || !targetField) {
-                                        throw new Error(`Fields not found yet in ${sourceTable.name} or ${targetTable.name}.`);
+                                        const availSource = (sourceTable.fields || []).map((f:any) => f.name).join(', ');
+                                        const availTarget = (targetTable.fields || []).map((f:any) => f.name).join(', ');
+                                        throw new Error(`Fields not found. ${sourceTable.name} has: [${availSource}], ${targetTable.name} has: [${availTarget}]`);
                                     }
 
                                     const newRel = {
-                                        id: rel.id || nanoid(),
-                                        name: rel.name || `${sourceTable.name}_${sourceField.name}_fk`,
-                                        sourceTableId: sourceTable.id,
-                                        targetTableId: targetTable.id,
-                                        sourceFieldId: sourceField.id,
-                                        targetFieldId: targetField.id,
-                                        sourceCardinality: (rel.sourceCardinality || rel.source_cardinality || 'many').toLowerCase().includes('one') ? 'one' : 'many',
-                                        targetCardinality: (rel.targetCardinality || rel.target_cardinality || 'one').toLowerCase().includes('one') ? 'one' : 'many',
+                                        id: rel.id || nanoid(), name: rel.name || `${sourceTable.name}_${sourceField.name}_fk`,
+                                        sourceTableId: sourceTable.id, targetTableId: targetTable.id,
+                                        sourceFieldId: sourceField.id, targetFieldId: targetField.id,
+                                        sourceCardinality: (rel.sourceCardinality || 'many').toLowerCase().includes('one') ? 'one' : 'many',
+                                        targetCardinality: (rel.targetCardinality || 'one').toLowerCase().includes('one') ? 'one' : 'many',
                                         createdAt: Date.now(),
                                     };
 
-                                    if (id === chartdbRef.current.diagramId) {
-                                        await chartdbRef.current.addRelationship(newRel);
-                                    } else {
-                                        await storageRef.current.addRelationship({ diagramId: id, relationship: newRel });
-                                        await chartdbRef.current.loadDiagram(id);
-                                    }
+                                    if (id === chartdbRef.current.diagramId) { await chartdbRef.current.addRelationship(newRel); }
+                                    else { await storageRef.current.addRelationship({ diagramId: id, relationship: newRel }); await chartdbRef.current.loadDiagram(id); }
                                     return { status: 'success', relationshipId: newRel.id };
                                 });
                                 break;
                             }
 
-                            case 'update_relationship': {
-                                // For now ChartDB might not have a direct 'updateRelationship' on context
-                                // but we can simulate it by re-adding or updating the state
-                                // Looking at ChartDBContext, it might need more research but let's assume we can update it
-                                // Or skip for now if not available.
-                                result = { error: 'update_relationship not yet implemented in ChartDB context' };
+                            case 'add_area': {
+                                const id = await getTargetId();
+                                if (id !== chartdbRef.current.diagramId) throw new Error('Switch to the diagram first.');
+                                const areaData = params.area || params;
+                                const newArea = {
+                                    id: generateId(),
+                                    name: areaData.name,
+                                    color: areaData.color || '#e2e8f0',
+                                    x: areaData.x || 0,
+                                    y: areaData.y || 0,
+                                    width: areaData.width || 200,
+                                    height: areaData.height || 200,
+                                };
+                                await chartdbRef.current.addArea(newArea);
+                                result = { status: 'success', areaId: newArea.id };
                                 break;
                             }
 
-                            case 'delete_relationship': {
-                                const id = await getTargetDiagramId();
-                                if (!id) throw new Error('Diagram not found.');
-                                await chartdbRef.current.removeRelationship(params.id);
-                                result = { status: 'success' };
+                            case 'add_note': {
+                                const id = await getTargetId();
+                                if (id !== chartdbRef.current.diagramId) throw new Error('Switch to the diagram first.');
+                                const noteData = params.note || params;
+                                const newNote = {
+                                    id: generateId(),
+                                    content: noteData.content,
+                                    x: noteData.x || 0,
+                                    y: noteData.y || 0,
+                                    color: noteData.color || '#fef3c7',
+                                    createdAt: new Date(),
+                                    updatedAt: new Date(),
+                                };
+                                await chartdbRef.current.addNote(newNote);
+                                result = { status: 'success', noteId: newNote.id };
                                 break;
                             }
+
+                            case 'update_table':
+                                await chartdbRef.current.updateTable(params.id, params.attributes);
+                                result = { status: 'success' };
+                                break;
+
+                            case 'delete_table':
+                                await chartdbRef.current.removeTable(params.id);
+                                result = { status: 'success' };
+                                break;
 
                             default:
                                 result = { error: `Method ${message.method} not implemented` };
                         }
-                        console.log('Result:', result);
                     } catch (err) {
                         result = { status: 'error', error: (err as Error).message };
-                        console.error('[MCP] Execution Error:', err);
-                    } finally {
-                        console.groupEnd();
-                    }
+                        console.error('[MCP] Error:', err);
+                    } finally { console.groupEnd(); }
                     
-                    ws.send(JSON.stringify({
-                        type: 'response',
-                        id: message.id,
-                        result: result || { status: 'success' }
-                    }));
+                    ws.send(JSON.stringify({ type: 'response', id: message.id, result: result || { status: 'success' } }));
                 }
             };
 
-            ws.onclose = () => {
-                setIsConnected(false);
-                setTimeout(connect, 3000);
-            };
+            ws.onclose = () => { setIsConnected(false); setTimeout(connect, 3000); };
         };
-
         connect();
     }, [navigate, updateConfig]);
 
-    return (
-        <MCPContext.Provider value={{ isConnected }}>
-            {children}
-        </MCPContext.Provider>
-    );
+    return <MCPContext.Provider value={{ isConnected }}>{children}</MCPContext.Provider>;
 };
 
 export const useMCP = () => {
