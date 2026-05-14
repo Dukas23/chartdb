@@ -1,11 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-    CallToolRequestSchema,
-    ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
-import type { WebSocket } from 'ws';
-import { WebSocketServer } from 'ws';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { WebSocketServer, WebSocket } from 'ws';
 
 export class McpBridge {
     private server: Server;
@@ -29,7 +25,7 @@ export class McpBridge {
                 {
                     name: 'list_diagrams',
                     description: 'List all available projects/diagrams',
-                    inputSchema: { type: 'object', properties: {} },
+                    inputSchema: { type: 'object', properties: {} }
                 },
                 {
                     name: 'create_diagram',
@@ -38,15 +34,15 @@ export class McpBridge {
                         type: 'object',
                         properties: {
                             name: { type: 'string' },
-                            databaseType: { type: 'string' },
+                            databaseType: { type: 'string' }
                         },
-                        required: ['name'],
-                    },
+                        required: ['name']
+                    }
                 },
                 {
                     name: 'get_diagram',
                     description: 'Get the current diagram state',
-                    inputSchema: { type: 'object', properties: {} },
+                    inputSchema: { type: 'object', properties: {} }
                 },
                 {
                     name: 'add_table',
@@ -54,10 +50,33 @@ export class McpBridge {
                     inputSchema: {
                         type: 'object',
                         properties: {
-                            table: { type: 'object' },
+                            table: { type: 'object' }
                         },
-                        required: ['table'],
-                    },
+                        required: ['table']
+                    }
+                },
+                {
+                    name: 'update_table',
+                    description: 'Update an existing table',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            id: { type: 'string' },
+                            attributes: { type: 'object' }
+                        },
+                        required: ['id', 'attributes']
+                    }
+                },
+                {
+                    name: 'delete_table',
+                    description: 'Delete a table from the diagram',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            id: { type: 'string' }
+                        },
+                        required: ['id']
+                    }
                 },
                 {
                     name: 'add_relationship',
@@ -65,36 +84,51 @@ export class McpBridge {
                     inputSchema: {
                         type: 'object',
                         properties: {
-                            relationship: { type: 'object' },
+                            relationship: { type: 'object' }
                         },
-                        required: ['relationship'],
-                    },
+                        required: ['relationship']
+                    }
                 },
-            ],
+                {
+                    name: 'update_relationship',
+                    description: 'Update an existing relationship',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            id: { type: 'string' },
+                            attributes: { type: 'object' }
+                        },
+                        required: ['id', 'attributes']
+                    }
+                },
+                {
+                    name: 'delete_relationship',
+                    description: 'Delete a relationship',
+                    inputSchema: {
+                        type: 'object',
+                        properties: {
+                            id: { type: 'string' }
+                        },
+                        required: ['id']
+                    }
+                }
+            ]
         }));
 
-        this.server.setRequestHandler(
-            CallToolRequestSchema,
-            async (request) => {
-                // SOLUCIÓN 2: Fallback para argumentos vacíos para evitar errores de validación
-                const args = request.params.arguments || {};
-                const result = await this.handleToolCall(
-                    request.params.name,
-                    args
-                );
-
-                return {
-                    content: [
-                        { type: 'text', text: JSON.stringify(result, null, 2) },
-                    ],
-                    isError: !!(result as any)?.error,
-                };
-            }
-        );
+        this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+            const args = request.params.arguments || {};
+            const result = await this.handleToolCall(request.params.name, args);
+            
+            return {
+                content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+                isError: !!(result as any)?.error
+            };
+        });
     }
 
     private setupWs() {
         this.wss.on('connection', (ws) => {
+            console.error('[BRIDGE] Browser connected');
             this.browserWs = ws;
             ws.on('message', (data) => {
                 try {
@@ -107,32 +141,35 @@ export class McpBridge {
                         }
                     }
                 } catch (e) {
-                    console.error('[BRIDGE] WS Error:', e);
+                    console.error('[BRIDGE] Error parsing message:', e);
                 }
             });
             ws.on('close', () => {
                 this.browserWs = null;
+                console.error('[BRIDGE] Browser disconnected');
             });
         });
     }
 
     async handleToolCall(name: string, args: any): Promise<any> {
-        if (!this.browserWs) return { error: 'Browser not connected.' };
+        if (!this.browserWs) {
+            return { error: 'Browser not connected. Open ChartDB.' };
+        }
+
         const id = Math.random().toString(36).substring(7);
         return new Promise((resolve) => {
             this.pendingRequests.set(id, resolve);
-            this.browserWs!.send(
-                JSON.stringify({
-                    type: 'tool_call',
-                    id,
-                    method: name,
-                    params: args,
-                })
-            );
+            this.browserWs!.send(JSON.stringify({
+                type: 'tool_call',
+                id,
+                method: name,
+                params: args
+            }));
+            
             setTimeout(() => {
                 if (this.pendingRequests.has(id)) {
                     this.pendingRequests.delete(id);
-                    resolve({ error: 'Browser timeout' });
+                    resolve({ error: 'Request timeout from browser' });
                 }
             }, 15000);
         });
