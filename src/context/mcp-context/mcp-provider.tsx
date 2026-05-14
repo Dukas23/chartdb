@@ -230,6 +230,22 @@ export const MCPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                                 result = { status: 'success' };
                                 break;
 
+                            case 'update_relationship': {
+                                const id = await getTargetId();
+                                if (id !== chartdbRef.current.diagramId) throw new Error('Switch to the diagram first.');
+                                await chartdbRef.current.updateRelationship(params.id, params.attributes);
+                                result = { status: 'success' };
+                                break;
+                            }
+
+                            case 'delete_relationship': {
+                                const id = await getTargetId();
+                                if (id !== chartdbRef.current.diagramId) throw new Error('Switch to the diagram first.');
+                                await chartdbRef.current.removeRelationship(params.id);
+                                result = { status: 'success' };
+                                break;
+                            }
+
                             default:
                                 result = { error: `Method ${message.method} not implemented` };
                         }
